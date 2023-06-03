@@ -1,7 +1,19 @@
 import asyncio
 import sys
 
-async def balance_load(reader, writer, backend):
+index = 0
+
+def round_robin(length):
+    global index
+    choice = index
+    index = (index + 1) % length
+    return choice
+
+def choose_server(servers):
+    choice = round_robin(len(servers))
+    return servers[choice]
+
+async def balance_load(reader, writer, servers):
     # Read request from client
     data = await reader.read(512)
     message = data.decode()
@@ -9,11 +21,12 @@ async def balance_load(reader, writer, backend):
     
     print(f"Received {message}from {addr}")
 
-    #DEBUG
-    print(f"Send {message} to {backend} on port {81}")
-
     # Forward request to backend server
-    r, w = await asyncio.open_connection(backend, 81)
+    backend, port = choose_server(servers)
+    print(backend, port)
+
+    #open async connection to backend server
+    r, w = await asyncio.open_connection(backend, port)
     w.write(data)
     await w.drain()
 
@@ -34,19 +47,18 @@ async def main():
     argc = len(sys.argv)
     argv = sys.argv
 
-    if argc < 3:
-        print("Usage: python lb.py $PORT $BACKENDHOST")
+    if argc % 2 != 0:
+        print("Usage: python lb.py $LISTENPORT $BACKENDHOST1 $BACKENDPORT1 ... ")
         return 1
     
-    PORT = int(argv[1])
-    #BACKENDHOST = argv[2]
-    #DEBUG
-    BACKENDHOST = '127.0.0.1'
-    #HOST = socket.gethostname()
-    #DEBUG
-    HOST = '127.0.0.1'
+    LBPORT = int(argv[1])
+    HOST = 'localhost'
 
-    server = await asyncio.start_server(lambda r, w: balance_load(r, w, BACKENDHOST), HOST, PORT)
+    numServers = (argc)//2
+    BACKENDSERVERS = [(argv[2*i], argv[2*i + 1]) for i in range(1, numServers)]
+        
+    # Start a server on (HOST, PORT), pass in the list of backend servers
+    server = await asyncio.start_server(lambda r, w: balance_load(r, w, BACKENDSERVERS), HOST, LBPORT)
     addrs = ', '.join(str(sock.getsockname()) for sock in server.sockets)
     print(f'Serving on {addrs}')
 
