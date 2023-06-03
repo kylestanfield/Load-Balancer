@@ -1,4 +1,6 @@
 import asyncio
+from dotenv import load_dotenv
+import os
 import sys
 
 index = 0
@@ -47,15 +49,17 @@ async def main():
     argc = len(sys.argv)
     argv = sys.argv
 
-    if argc % 2 != 0:
-        print("Usage: python lb.py $LISTENPORT $BACKENDHOST1 $BACKENDPORT1 ... ")
+    load_dotenv()
+
+    if argc != 3:
+        print("Usage: python lb.py $HEALTHPERIOD $NUMSERVERS")
         return 1
     
-    LBPORT = int(argv[1])
+    LBPORT = int(os.getenv("LISTENPORT"))
     HOST = 'localhost'
 
-    numServers = (argc)//2
-    BACKENDSERVERS = [(argv[2*i], argv[2*i + 1]) for i in range(1, numServers)]
+    numServers = int(argv[2])
+    BACKENDSERVERS = [(os.getenv(f"BACKENDHOST{i}"), int(os.getenv(f"BACKENDPORT{i}"))) for i in range(1, numServers+1)]
         
     # Start a server on (HOST, PORT), pass in the list of backend servers
     server = await asyncio.start_server(lambda r, w: balance_load(r, w, BACKENDSERVERS), HOST, LBPORT)
