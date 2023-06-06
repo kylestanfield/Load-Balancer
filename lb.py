@@ -20,7 +20,16 @@ HOST = 'localhost'
 PERIOD = int(argv[1])
 
 numServers = int(argv[2])
-BACKENDSERVERS = [(os.getenv(f"BACKENDHOST{i}"), int(os.getenv(f"BACKENDPORT{i}"))) for i in range(1, numServers+1)]
+BACKENDSERVERS = []
+for i in range(1, numServers+1):
+    serverHost = os.getenv(f"BACKENDHOST{i}")
+    serverPort = os.getenv(f"BACKENDPORT{i}")
+
+    if serverHost is None or serverPort is None:
+        print(f'Error: Could not read server {i} info from .env')
+        sys.exit(1)
+    serverPort = int(serverPort)
+    BACKENDSERVERS.append((serverHost, serverPort))
 DOWNSERVERS = {}
 
 
@@ -28,15 +37,18 @@ def round_robin(length):
     global index
     global DOWNSERVERS
     choice = index
-    index = (index + 1) % length
-    while index in DOWNSERVERS:
-        index = (index + 1) % length
+    choice = (choice + 1) % length
+    while choice in DOWNSERVERS:
+        choice = (choice + 1) % length
+    index = choice
     return choice
 
 def choose_server():
-    global BACKENDSERVERS
-    choice = round_robin(len(BACKENDSERVERS))
-    return BACKENDSERVERS[choice]
+    global numServers
+    if len(DOWNSERVERS.keys()) == numServers:
+        return -1
+    choice = round_robin(numServers)
+    return choice
 
 async def balance_load(reader, writer):
     # Read request from client
@@ -47,14 +59,23 @@ async def balance_load(reader, writer):
     print(f"Received {message}from {addr}")
 
     # Forward request to backend server
-    backend, port = choose_server()
+    choice = choose_server()
+    if choice < 0:
+        print('No backend servers are available')
+        writer.close()
+        return
+    
+    backend, port = BACKENDSERVERS[choice]
     print(backend, port)
 
-    #open async connection to backend server
-    # TODO fix bug where this funct gets health check response
-    # TODO add check if server is in down servers map
-    # TODO add try except block to check if connection fails...
-    r, w = await asyncio.open_connection(backend, port)
+    try:
+        r, w = await asyncio.open_connection(backend, port)
+    except ConnectionRefusedError:
+        print('Connection refused by backend')
+        writer.close()
+        global DOWNSERVERS
+        DOWNSERVERS[choice] = True
+        return
     w.write(data)
     await w.drain()
 
@@ -87,14 +108,25 @@ async def main():
 async def health_check(index):
     timeout = aiohttp.ClientTimeout(total=5)
     status_url = os.getenv('STATUS_URL')
+    global DOWNSERVERS
     while True:
-        print(f'Health check on server {index}')
+        print(f'Health check on server {index+1}')
         host, port = BACKENDSERVERS[index]
         # open a tcp session w backend server and do http get to /status
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"http://{host}/{status_url}:{port}", timeout=timeout) as resp:
-                print(resp.status)
-                print(await resp.text())
+            try:
+                async with session.get(f"http://{host}:{port}/{status_url}", timeout=timeout) as resp:
+                    print(resp.status)
+                    print(await resp.text())
+                    if index in DOWNSERVERS:
+                        del DOWNSERVERS[index]
+            except asyncio.exceptions.TimeoutError:
+                print(f"Health check timed out on server {index+1}")
+                DOWNSERVERS[index] = True
+            except aiohttp.ClientConnectionError:
+                print(f"Could not connect to backend {index+1}")
+                DOWNSERVERS[index] = True
+
         await asyncio.sleep(PERIOD)
 
 if __name__ == "__main__":
